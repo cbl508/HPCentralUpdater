@@ -238,16 +238,7 @@ try {
                 RepositoryReport     = [string]$report
               }
 
-              $filters = (Get-HPRepositoryInfo).Filters
-              if ($filters -and $filters.Count -gt 0) {
-                $resData.filters = @($filters | Select-Object platform, os, osVer, category, releaseType, characteristic, preferLTSC, version)
-              }
-              else {
-                $resData.filters = @();
-                if ($filters -and $filters.platform) {
-                  $resData.filters = @($filters | Select-Object platform, os, osVer, category, releaseType, characteristic, preferLTSC, version)
-                }
-              }
+              $resData.filters = @()
             }
             catch {
               $resData.success = $false
@@ -319,49 +310,6 @@ try {
             $script:activeJobs += $job
             $resData.message = "Task $($job.Id) created"
           }
-          '^/api/filter$' {
-            Push-Location $script:repoPath
-            try {
-              if ($method -eq 'DELETE') {
-                if (-not $reqBody.Platform) { throw 'Platform ID is required for deletion.' }
-                Remove-HPRepositoryFilter -Platform $reqBody.Platform -Confirm:$false -Verbose *>&1 | ForEach-Object { Write-ApiLog "$_" }
-              }
-              else {
-                if (-not $reqBody.Platform -or $reqBody.Platform -notmatch '^[A-Fa-f0-9]{4}$') {
-                  throw 'Platform ID must be exactly 4 hexadecimal characters.'
-                }
-
-                $params = @{
-                  Platform       = $reqBody.Platform.ToUpperInvariant()
-                  Category       = if ($reqBody.Category) { [string[]]$reqBody.Category } else { @('*') }
-                  ReleaseType    = if ($reqBody.ReleaseType) { [string[]]$reqBody.ReleaseType } else { @('*') }
-                  Characteristic = if ($reqBody.Characteristic) { [string[]]$reqBody.Characteristic } else { @('*') }
-                  Verbose        = $true
-                }
-
-                if ($reqBody.Os) {
-                  $params.Os = [string]$reqBody.Os
-                }
-
-                if ($reqBody.Os -ne '*' -and $reqBody.OsVer -and [string]$reqBody.OsVer -ne '') {
-                  $params.OsVer = [string]$reqBody.OsVer
-                }
-
-                if ($reqBody.PreferLtsc) {
-                  $params.PreferLTSC = $true
-                }
-
-                Add-HPRepositoryFilter @params *>&1 | ForEach-Object { Write-ApiLog "$_" }
-              }
-            }
-            catch {
-              $resData.success = $false
-              $resData.message = $_.Exception.Message
-            }
-            finally {
-              Pop-Location
-            }
-          }
           '^/api/fleet/scan$' {
             try {
               $hostname = $reqBody.hostname
@@ -384,7 +332,8 @@ try {
 
                 Remove-CimSession $session
 
-                $resData.status = 'Online'
+                $manufacturer = if ($modelInfo.Manufacturer) { $modelInfo.Manufacturer } else { 'Unknown' }
+                
                 $resData.system = @{
                   model    = $(if ($modelInfo.Model) { $modelInfo.Model } else { 'Unknown' })
                   serial   = $(if ($biosInfo.SerialNumber) { $biosInfo.SerialNumber } else { 'Unknown' })
@@ -392,21 +341,28 @@ try {
                   os       = $(if ($osInfo.Caption) { $osInfo.Caption -replace 'Microsoft Windows ', '' } else { 'Unknown' })
                 }
                 
-                # Check for applicable packages in the local repository
-                $applicable = @()
-                if ($resData.system.platform -ne 'Unknown') {
-                  $cvaFiles = Get-ChildItem -Path $script:repoPath -Filter "*.cva" -ErrorAction SilentlyContinue
-                  if ($cvaFiles) {
-                    $cvaMatches = $cvaFiles | Select-String -Pattern "SysId.*$($resData.system.platform)" -List -ErrorAction SilentlyContinue
-                    foreach ($m in $cvaMatches) {
-                      $exeName = $m.Filename -replace '\.cva$', '.exe'
-                      if (Test-Path (Join-Path $script:repoPath $exeName)) {
-                        $applicable += $exeName
+                if ($manufacturer -notmatch 'HP|Hewlett-Packard') {
+                  $resData.status = 'Not Applicable'
+                  $resData.message = 'Not an HP Computer'
+                  $resData.applicable = @()
+                }
+                else {
+                  $resData.status = 'Online'
+                    
+                  # Fetch applicable packages directly using HPCMSL
+                  $applicable = @()
+                  if ($resData.system.platform -ne 'Unknown') {
+                    Write-ApiLog "Fetching available updates from HP for platform $($resData.system.platform)..."
+                    $softpaqs = Get-HPSoftpaqList -Platform $resData.system.platform -Category "Firmware", "Driver", "Bios" -ReleaseType "Critical", "Recommended" -ErrorAction SilentlyContinue
+                    if ($softpaqs) {
+                      foreach ($sp in $softpaqs) {
+                        if ($sp.Id) { $applicable += $sp.Id }
+                        elseif ($sp.Number) { $applicable += $sp.Number }
                       }
                     }
                   }
+                  $resData.applicable = $applicable
                 }
-                $resData.applicable = $applicable
               }
             }
             catch {
@@ -420,66 +376,108 @@ try {
               $targets = $targetsStr -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
               $packages = if ($reqBody.packages) { $reqBody.packages } else { @() }
                             
-              Write-ApiLog "Starting remote deployment to targets: $($targets -join ', ')"
+              Write-ApiLog "Starting background deployment task for: $($targets -join ', ')"
                             
               if ($targets.Count -eq 0 -or $packages.Count -eq 0) {
                 throw "Targets and packages must be provided."
               }
-                            
-              foreach ($pctarget in $targets) {
-                Write-ApiLog "Verifying connection to $pctarget..."
-                if (-not (Test-Connection -ComputerName $pctarget -Count 1 -Quiet -ErrorAction SilentlyContinue)) {
-                  Write-ApiLog "ERROR: Could not ping $pctarget"
-                  continue
-                }
-                                
-                foreach ($pkg in $packages) {
-                  $localPkgPath = Join-Path $script:repoPath $pkg
-                  if (-not (Test-Path $localPkgPath)) {
-                    Write-ApiLog "ERROR: Package $pkg not found in repository $script:repoPath"
+              
+              $job = Start-Job -ScriptBlock {
+                param($targets, $packages, $repoPath)
+                Import-Module HP.Repo -ErrorAction SilentlyContinue
+                
+                foreach ($pctarget in $targets) {
+                  Write-Verbose "Verifying connection to $pctarget..."
+                  if (-not (Test-Connection -ComputerName $pctarget -Count 1 -Quiet -ErrorAction SilentlyContinue)) {
+                    Write-Error "Could not ping $pctarget"
                     continue
                   }
+                                  
+                  foreach ($pkg in $packages) {
+                    Write-Verbose "Ensuring package $pkg is downloaded locally to $repoPath..."
+                    Get-HPSoftpaq -Number $pkg -Directory $repoPath -SaveAs "$pkg.exe" -ErrorAction SilentlyContinue | Out-Null
+                    
+                    $localPkgPath = Join-Path $repoPath "$pkg.exe"
+                    if (-not (Test-Path $localPkgPath)) {
+                      $localPkgPath = Join-Path $repoPath $pkg
+                      if (-not (Test-Path $localPkgPath)) {
+                        Write-Error "Failed to download Package $pkg to repository $repoPath"
+                        continue
+                      }
+                    }
 
-                  Write-ApiLog "Deploying $pkg to $pctarget..."
-                                    
-                  try {
-                    $fileName = Split-Path $localPkgPath -Leaf
-                    $remoteSmbDest = "\\$pctarget\c$\Windows\Temp\$fileName"
-                    $remoteLocalDest = "C:\Windows\Temp\$fileName"
-                                        
-                    Write-ApiLog "Copying $fileName to $pctarget via SMB..."
-                    Copy-Item -Path $localPkgPath -Destination $remoteSmbDest -Force -ErrorAction Stop
-                                        
-                    Write-ApiLog "Executing $fileName on $pctarget via WMI..."
-                    $opt = New-CimSessionOption -Protocol Dcom
-                    $session = New-CimSession -ComputerName $pctarget -SessionOption $opt -ErrorAction Stop
-                    
-                    $commandLine = "$remoteLocalDest /s /a /s /q /x"
-                    $invokeResult = Invoke-CimMethod -CimSession $session -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $commandLine } -ErrorAction Stop
-                    
-                    if ($invokeResult.ReturnValue -eq 0) {
-                      Write-ApiLog "Deploy Result ($pctarget): Process started successfully (PID: $($invokeResult.ProcessId)). Package is installing silently."
+                    Write-Verbose "Deploying $pkg to $pctarget..."
+                                      
+                    try {
+                      $fileName = Split-Path $localPkgPath -Leaf
+                      $remoteSmbDest = "\\$pctarget\c$\Windows\Temp\$fileName"
+                      $remoteLocalDest = "C:\Windows\Temp\$fileName"
+                                          
+                      Write-Verbose "Copying $fileName to $pctarget via SMB..."
+                      Copy-Item -Path $localPkgPath -Destination $remoteSmbDest -Force -ErrorAction Stop
+                                          
+                      Write-Verbose "Executing $fileName on $pctarget via WMI..."
+                      $opt = New-CimSessionOption -Protocol Dcom
+                      $session = New-CimSession -ComputerName $pctarget -SessionOption $opt -ErrorAction Stop
+                      
+                      $commandLine = "$remoteLocalDest /s /a /s /q /x"
+                      $invokeResult = Invoke-CimMethod -CimSession $session -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $commandLine } -ErrorAction Stop
+                      
+                      if ($invokeResult.ReturnValue -eq 0) {
+                        Write-Verbose "Deploy Result ($pctarget): Process started successfully (PID: $($invokeResult.ProcessId)). Package is installing silently."
+                      }
+                      else {
+                        Write-Error "Deploy Result ($pctarget): Failed to start process. WMI Return Value: $($invokeResult.ReturnValue)"
+                      }
                     }
-                    else {
-                      Write-ApiLog "Deploy Result ($pctarget): Failed to start process. WMI Return Value: $($invokeResult.ReturnValue)"
+                    catch {
+                      Write-Error "Deployment failed on $pctarget : $_"
+                    }
+                    finally {
+                      if (Get-Variable -Name 'session' -ErrorAction SilentlyContinue) {
+                        Remove-CimSession -Session $session -ErrorAction SilentlyContinue
+                      }
                     }
                   }
-                  catch {
-                    Write-ApiLog "Deployment failed on $pctarget : $_"
-                  }
-                  finally {
-                    if (Get-Variable -Name 'session' -ErrorAction SilentlyContinue) {
-                      Remove-CimSession -Session $session -ErrorAction SilentlyContinue
-                    }
-                  }
+                  Write-Verbose "Completed deployment to $pctarget."
                 }
-                Write-ApiLog "Completed deployment to $pctarget."
+              } -ArgumentList $targets, $packages, $script:repoPath
+
+              $script:activeJobs += $job
+              $resData.message = "Task $($job.Id) created for deployment"
+            }
+            catch {
+              $resData.success = $false
+              $resData.message = $_.Exception.Message
+            }
+          }
+          '^/api/open-folder$' {
+            try {
+              if (Test-Path $script:repoPath) {
+                Invoke-Item $script:repoPath
+                $resData.message = "Folder opened"
+              }
+              else {
+                throw "Repository path does not exist"
               }
             }
             catch {
               $resData.success = $false
               $resData.message = $_.Exception.Message
             }
+          }
+          '^/api/exit$' {
+            Write-ApiLog "Received shutdown request from Web UI."
+            $resData.message = "Server shutting down..."
+            Send-Response -Response $response -Body ($resData | ConvertTo-Json -Depth 5 -Compress)
+            
+            # Allow a brief moment for the response to send before killing the process
+            Start-Sleep -Milliseconds 500
+            if ($listener) {
+              $listener.Stop()
+              $listener.Close()
+            }
+            Stop-Process -Id $PID -Force
           }
           default {
             $resData.success = $false

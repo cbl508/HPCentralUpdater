@@ -33,7 +33,6 @@
             <ul class="nav-links">
                 <li><button class="nav-btn active" data-tab="repository"><i class="fa-solid fa-server"></i>
                         Repository</button></li>
-                <li><button class="nav-btn" data-tab="filters"><i class="fa-solid fa-filter"></i> Filters</button></li>
                 <li><button class="nav-btn" data-tab="settings"><i class="fa-solid fa-gear"></i> Settings</button></li>
                 <li><button class="nav-btn" data-tab="fleet"><i class="fa-solid fa-server"></i> Fleet</button></li>
                 <li><button class="nav-btn" data-tab="logs"><i class="fa-solid fa-terminal"></i> Logs</button></li>
@@ -43,9 +42,9 @@
                 <p class="status-label">Current Repository</p>
                 <div class="path-input-group">
                     <input type="text" id="repo-path" placeholder="C:\Repository" />
-                    <button id="btn-set-path" class="btn btn-icon" title="Set Path"><i
+                    <button id="btn-set-path" class="btn btn-icon" title="Save Path"><i
                             class="fa-solid fa-check"></i></button>
-                    <button id="btn-open-path" class="btn btn-icon" title="Open Folder (Not available in web)"><i
+                    <button id="btn-open-path" class="btn btn-icon" title="Open Folder in File Explorer"><i
                             class="fa-solid fa-folder-open"></i></button>
                 </div>
             </div>
@@ -96,149 +95,6 @@
                 </div>
             </section>
 
-            <!-- Filters Tab -->
-            <section id="tab-filters" class="tab-pane fade-in">
-                <div class="tab-header">
-                    <h2><i class="fa-solid fa-filter"></i> Repository Filters</h2>
-                    <p>Add filters to control what gets downloaded into the repository.</p>
-                </div>
-
-                <form id="filter-form" class="form-container glass-card">
-                    <div class="form-row two-cols">
-                        <div class="input-group">
-                            <label for="f-platform">Platform ID</label>
-                            <input type="text" id="f-platform" placeholder="e.g. 8A33" maxlength="4" required />
-                            <small>Exactly 4 hexadecimal characters.</small>
-                        </div>
-                        <div class="input-group">
-                            <label for="f-os">Operating System</label>
-                            <div class="select-wrapper">
-                                <select id="f-os">
-                                    <option value="*">All (Current)</option>
-                                    <option value="win10">Windows 10</option>
-                                    <option value="win11">Windows 11</option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="form-row two-cols">
-                        <div class="input-group">
-                            <label for="f-osver">OS Version</label>
-                            <div class="select-wrapper">
-                                <select id="f-osver">
-                                    <option value="">Any</option>
-                                    <option value="1809">1809</option>
-                                    <option value="1903">1903</option>
-                                    <option value="1909">1909</option>
-                                    <option value="2004">2004</option>
-                                    <option value="2009">2009</option>
-                                    <option value="21H1">21H1</option>
-                                    <option value="21H2">21H2</option>
-                                    <option value="22H2">22H2</option>
-                                    <option value="23H2">23H2</option>
-                                    <option value="24H2">24H2</option>
-                                    <option value="25H2">25H2</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="input-group checkbox-wrapper">
-                            <label class="custom-checkbox">
-                                <input type="checkbox" id="f-ltsc" />
-                                <span class="checkmark"></span>
-                                Prefer LTSC
-                            </label>
-                        </div>
-                    </div>
-
-                    <div class="form-row multi-selects grid-3">
-                        <div class="multi-select-group">
-                            <label>Category</label>
-                            <div class="checkbox-list" id="f-category">
-                                <label class="custom-checkbox"><input type="checkbox" value="Bios"><span
-                                        class="checkmark"></span> Bios</label>
-                                <label class="custom-checkbox"><input type="checkbox" value="Firmware"><span
-                                        class="checkmark"></span> Firmware</label>
-                                <label class="custom-checkbox"><input type="checkbox" value="Driver"><span
-                                        class="checkmark"></span> Driver</label>
-                                <label class="custom-checkbox"><input type="checkbox" value="Software"><span
-                                        class="checkmark"></span> Software</label>
-                                <label class="custom-checkbox"><input type="checkbox" value="Os"><span
-                                        class="checkmark"></span> Os</label>
-                                <label class="custom-checkbox"><input type="checkbox" value="Manageability"><span
-                                        class="checkmark"></span> Manageability</label>
-                                <label class="custom-checkbox"><input type="checkbox" value="Diagnostic"><span
-                                        class="checkmark"></span> Diagnostic</label>
-                                <label class="custom-checkbox"><input type="checkbox" value="Utility"><span
-                                        class="checkmark"></span> Utility</label>
-                                <label class="custom-checkbox"><input type="checkbox" value="Driverpack"><span
-                                        class="checkmark"></span> Driverpack</label>
-                                <label class="custom-checkbox"><input type="checkbox" value="Dock"><span
-                                        class="checkmark"></span> Dock</label>
-                                <label class="custom-checkbox"><input type="checkbox" value="UWPPack"><span
-                                        class="checkmark"></span> UWPPack</label>
-                            </div>
-                        </div>
-
-                        <div class="multi-select-group">
-                            <label>Release Type</label>
-                            <div class="checkbox-list" id="f-release">
-                                <label class="custom-checkbox"><input type="checkbox" value="Critical"><span
-                                        class="checkmark"></span> Critical</label>
-                                <label class="custom-checkbox"><input type="checkbox" value="Recommended"><span
-                                        class="checkmark"></span> Recommended</label>
-                                <label class="custom-checkbox"><input type="checkbox" value="Routine"><span
-                                        class="checkmark"></span> Routine</label>
-                            </div>
-                        </div>
-
-                        <div class="multi-select-group">
-                            <label>Characteristic</label>
-                            <div class="checkbox-list" id="f-char">
-                                <label class="custom-checkbox"><input type="checkbox" value="SSM"><span
-                                        class="checkmark"></span> SSM</label>
-                                <label class="custom-checkbox"><input type="checkbox" value="DPB"><span
-                                        class="checkmark"></span> DPB</label>
-                                <label class="custom-checkbox"><input type="checkbox" value="UWP"><span
-                                        class="checkmark"></span> UWP</label>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="form-actions right">
-                        <button type="submit" class="btn btn-primary btn-glow"><i class="fa-solid fa-plus"></i> Add
-                            Filter</button>
-                    </div>
-                </form>
-
-                <div class="info-card glass-card" style="margin-top: 2rem;">
-                    <h3><i class="fa-solid fa-list-check"></i> Applied Filters</h3>
-                    <div class="table-container fade-in">
-                        <table class="datatable">
-                            <thead>
-                                <tr>
-                                    <th>Platform</th>
-                                    <th>OS</th>
-                                    <th>Version</th>
-                                    <th>Categories</th>
-                                    <th>Characteristics</th>
-                                    <th>Release Type</th>
-                                    <th>Action</th>
-                                </tr>
-                            </thead>
-                            <tbody id="filters-table-body">
-                                <!-- Dynamically populated -->
-                            </tbody>
-                        </table>
-                        <div id="filters-empty-state" class="empty-state">
-                            <i class="fa-solid fa-filter-circle-xmark empty-state-icon"></i>
-                            <p>No filters are currently applied to this repository.</p>
-                            <span class="text-muted text-sm">Use the form above to add filters before Syncing.</span>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
             <!-- Settings Tab -->
             <section id="tab-settings" class="tab-pane fade-in">
                 <div class="tab-header">
@@ -258,6 +114,14 @@
                         </div>
                         <span class="btn-desc">Creates a new repository metadata file in the configuration
                             folder.</span>
+                    </button>
+                    <button class="btn btn-danger hover-grow desc-btn" id="btn-shutdown"
+                        style="max-width: 300px; margin-top: 1rem;">
+                        <div class="btn-top">
+                            <div class="btn-icon"><i class="fa-solid fa-power-off"></i></div>
+                            <span>Shut Down Server</span>
+                        </div>
+                        <span class="btn-desc">Stops the background PowerShell API process entirely.</span>
                     </button>
                 </div>
 
@@ -383,6 +247,27 @@
     <div id="loading-overlay" class="loading-overlay hidden">
         <div class="spinner"></div>
         <p id="loading-text">Processing...</p>
+    </div>
+
+    <!-- Add Endpoint Modal -->
+    <div id="add-endpoint-modal" class="modal-overlay hidden">
+        <div class="modal glass-card fade-in">
+            <div class="modal-header">
+                <h3>Add New Endpoint</h3>
+                <button class="btn-close" id="btn-close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="input-group">
+                    <label for="endpoint-hostname">Hostname or IP Address</label>
+                    <input type="text" id="endpoint-hostname" placeholder="e.g., DESKTOP-1234 or 192.168.1.50"
+                        autocomplete="off" />
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="btn-cancel-modal">Cancel</button>
+                <button class="btn btn-primary btn-glow" id="btn-confirm-add">Scan Endpoint</button>
+            </div>
+        </div>
     </div>
 
     <script src="app.js"></script>

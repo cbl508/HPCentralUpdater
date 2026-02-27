@@ -1,4 +1,4 @@
 @echo off
 set "SCRIPT_DIR=%~dp0"
-powershell -ExecutionPolicy Bypass -File "%SCRIPT_DIR%HP.UpdateManager.ps1"
-pause
+start http://localhost:8080/
+powershell -Optimization -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%SCRIPT_DIR%..\scripts\securepaq-gui.ps1"

@@ -13,13 +13,13 @@ SolidCompression=yes
 OutputDir=Output
 
 [Files]
-Source: "CentralHPUpdater.exe"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: "..\scripts\securepaq-web-server.exe"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: "..\scripts\public\*"; DestDir: "{app}\scripts\public"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\Modules\*"; DestDir: "{app}\Modules"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\CentralHPUpdater"; Filename: "{app}\scripts\CentralHPUpdater.exe"
-Name: "{commondesktop}\CentralHPUpdater"; Filename: "{app}\scripts\CentralHPUpdater.exe"
+Name: "{group}\CentralHPUpdater"; Filename: "{app}\scripts\securepaq-web-server.exe"
+Name: "{commondesktop}\CentralHPUpdater"; Filename: "{app}\scripts\securepaq-web-server.exe"
 
 [Run]
-Filename: "{app}\scripts\CentralHPUpdater.exe"; Description: "Launch CentralHPUpdater"; Flags: postinstall nowait
+Filename: "{app}\scripts\securepaq-web-server.exe"; Description: "Launch CentralHPUpdater (Web Server)"; Flags: postinstall nowait

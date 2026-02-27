@@ -130,6 +130,35 @@ document.getElementById('btn-init').addEventListener('click', async () => {
     else showToast(res.message, true);
 });
 
+document.getElementById('btn-open-path').addEventListener('click', async () => {
+    showLoading('Opening Repository Folder...');
+    const res = await apiCall('/open-folder', 'POST');
+    hideLoading();
+    if (res.success) {
+        showToast('Repository Folder Opened');
+    } else {
+        showToast(res.message || 'Failed to open folder', true);
+    }
+});
+
+document.getElementById('btn-shutdown').addEventListener('click', async () => {
+    if (!confirm("Are you sure you want to stop the background server? You will need to launch the app again to use this dashboard.")) {
+        return;
+    }
+    showLoading('Shutting Down Server...');
+    const res = await apiCall('/exit', 'POST');
+    hideLoading();
+    if (res.success || res.message) {
+        document.body.innerHTML = `
+            <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; color:white; font-family:'Outfit', sans-serif;">
+                <i class="fa-solid fa-power-off" style="font-size: 4rem; margin-bottom: 2rem; color: #ff6b6b"></i>
+                <h1>Server Shutdown Complete</h1>
+                <p style="color: #9aa4b5; margin-top: 1rem;">You can now safely close this browser window.</p>
+            </div>
+        `;
+    }
+});
+
 document.getElementById('btn-sync').addEventListener('click', async () => {
     const refUrl = document.getElementById('ref-url').value.trim();
     if (!refUrl) {
@@ -187,86 +216,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
     else showToast(res.message, true);
 });
 
-// Filters Form
-function getCheckedValues(containerId) {
-    const inputs = document.querySelectorAll(`#${containerId} input:checked`);
-    return Array.from(inputs).map(inp => inp.value);
-}
-
-document.getElementById('filter-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const data = {
-        Platform: document.getElementById('f-platform').value.trim(),
-        Os: document.getElementById('f-os').value,
-        OsVer: document.getElementById('f-osver').value,
-        PreferLtsc: document.getElementById('f-ltsc').checked,
-        Category: getCheckedValues('f-category'),
-        ReleaseType: getCheckedValues('f-release'),
-        Characteristic: getCheckedValues('f-char')
-    };
-
-    showLoading('Adding Filter...');
-    const res = await apiCall('/filter', 'POST', data);
-    hideLoading();
-    if (res.success) {
-        showToast('Filter Added Successfully');
-        // Reset form
-        document.getElementById('f-platform').value = '';
-        document.querySelectorAll('#filter-form input[type="checkbox"]').forEach(c => c.checked = false);
-        // Refresh table
-        document.getElementById('btn-info').click();
-    } else {
-        showToast(res.message, true);
-    }
-});
-
-function renderFiltersTable(filters) {
-    const tbody = document.getElementById('filters-table-body');
-    const emptyState = document.getElementById('filters-empty-state');
-    const tableContainer = tbody.closest('table').parentElement;
-
-    tbody.innerHTML = '';
-
-    if (!filters || filters.length === 0) {
-        tbody.closest('table').classList.add('hidden');
-        emptyState.classList.remove('hidden');
-        return;
-    }
-
-    tbody.closest('table').classList.remove('hidden');
-    emptyState.classList.add('hidden');
-
-    filters.forEach(f => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td style="font-family: var(--font-mono); font-weight: bold;">${f.platform || '*'}</td>
-            <td>${f.os || '*'}</td>
-            <td>${f.osVer || '*'}</td>
-            <td><span class="badge badge-primary">${f.category ? (Array.isArray(f.category) ? f.category.join(', ') : f.category) : '*'}</span></td>
-            <td><span class="badge badge-secondary">${f.characteristic ? (Array.isArray(f.characteristic) ? f.characteristic.join(', ') : f.characteristic) : '*'}</span></td>
-            <td><span class="badge badge-warning">${f.releaseType ? (Array.isArray(f.releaseType) ? f.releaseType.join(', ') : f.releaseType) : '*'}</span></td>
-            <td>
-                <button class="btn btn-sm btn-danger" onclick="deleteFilter('${f.platform}')" title="Remove Filter">
-                    <i class="fa-solid fa-trash"></i>
-                </button>
-            </td>
-        `;
-        tbody.appendChild(tr);
-    });
-}
-
-window.deleteFilter = async function (platform) {
-    if (!confirm(`Are you sure you want to remove the filter for platform ${platform}?`)) return;
-    showLoading('Removing Filter...');
-    const res = await apiCall('/filter', 'DELETE', { Platform: platform });
-    hideLoading();
-    if (res.success) {
-        showToast('Filter Removed Successfully');
-        document.getElementById('btn-info').click();
-    } else {
-        showToast(res.message, true);
-    }
-};
+// Removed Filters logic
 
 // Fleet Management
 let fleetState = [];
@@ -353,6 +303,8 @@ function renderFleetTable() {
 
             if (res.success) {
                 showToast('Deployment Command Sent. Check Logs for status.');
+                endpoint.status = 'Deploying...';
+                renderFleetTable();
             } else {
                 showToast(res.message, true);
             }
@@ -362,16 +314,44 @@ function renderFleetTable() {
     updateBulkSelection();
 }
 
+// Add Endpoint Modal Logic
+const modalOverlay = document.getElementById('add-endpoint-modal');
+const hostInput = document.getElementById('endpoint-hostname');
+
 document.getElementById('btn-add-endpoint').addEventListener('click', () => {
-    const hostname = prompt('Enter the hostname or IP address of the target PC:');
-    if (hostname && hostname.trim()) {
+    modalOverlay.classList.remove('hidden');
+    hostInput.value = '';
+    setTimeout(() => hostInput.focus(), 100);
+});
+
+document.getElementById('btn-close-modal').addEventListener('click', () => {
+    modalOverlay.classList.add('hidden');
+});
+
+document.getElementById('btn-cancel-modal').addEventListener('click', () => {
+    modalOverlay.classList.add('hidden');
+});
+
+document.getElementById('btn-confirm-add').addEventListener('click', () => {
+    const hostname = hostInput.value.trim();
+    if (hostname) {
+        modalOverlay.classList.add('hidden');
         fleetState.push({
-            hostname: hostname.trim(),
+            hostname: hostname,
             status: 'Pending',
             system: null
         });
         renderFleetTable();
         scanEndpoint(fleetState.length - 1);
+    }
+});
+
+hostInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        document.getElementById('btn-confirm-add').click();
+    }
+    if (e.key === 'Escape') {
+        document.getElementById('btn-close-modal').click();
     }
 });
 
@@ -421,12 +401,14 @@ document.getElementById('btn-bulk-deploy').addEventListener('click', async () =>
             const res = await apiCall('/deploy', 'POST', { targets: endpoint.hostname, packages: endpoint.applicable });
             if (res.success) {
                 totalDeployments++;
+                endpoint.status = 'Deploying...';
             } else {
                 showToast(`Failed on ${endpoint.hostname}: ${res.message}`, true);
             }
         }
     }
 
+    renderFleetTable();
     hideLoading();
 
     if (totalDeployments > 0) {
