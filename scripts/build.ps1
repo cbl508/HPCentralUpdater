@@ -17,8 +17,8 @@ if (-not (Test-Path $iscc)) {
 
 if (Test-Path $iscc) {
     Write-Host "Compiling installer.iss..."
-    & $iscc "..\HP.UpdateManager.Gui\installer.iss"
-    Write-Host "Build complete. Check HP.UpdateManager.Gui\Output for the installer."
+    & $iscc ".\installer.iss"
+    Write-Host "Build complete. Check scripts\Output for the installer."
 }
 else {
     Write-Host "Inno Setup Compiler not found! Please install Inno Setup 6."
