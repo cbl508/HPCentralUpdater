@@ -47,9 +47,27 @@ foreach ($cmd in $ps2exeOverrides) {
 $script:apiLogs = New-Object System.Collections.Generic.List[string]
 $script:apiLogsMaxCount = 500
 $script:activeJobs = @()
+
+$AppDataDir = Join-Path $env:APPDATA "CentralHPUpdaterManager"
+if (-not (Test-Path $AppDataDir)) { New-Item -ItemType Directory -Path $AppDataDir -Force | Out-Null }
+$configFile = Join-Path $AppDataDir "config.json"
+$inventoryFile = Join-Path $AppDataDir "inventory.json"
+
 $script:repoPath = 'C:\SecurePacs'
+if (Test-Path $configFile) {
+  try {
+    $conf = Get-Content $configFile | ConvertFrom-Json
+    if ($conf.RepoPath) { $script:repoPath = $conf.RepoPath }
+  }
+  catch {}
+}
+
 if (-not (Test-Path $script:repoPath)) {
   New-Item -ItemType Directory -Path $script:repoPath -Force | Out-Null
+}
+
+function Save-Config {
+  @{ RepoPath = $script:repoPath } | ConvertTo-Json -Compress | Out-File $configFile
 }
 
 function Write-ApiLog ($Message) {
@@ -209,10 +227,36 @@ try {
               if ($reqBody.path -and (Test-Path $reqBody.path)) {
                 $script:repoPath = $reqBody.path
                 $resData.path = $script:repoPath
+                Save-Config
               }
               else {
                 $resData.success = $false
                 $resData.message = 'Invalid Path'
+              }
+            }
+          }
+          '^/api/inventory$' {
+            if ($method -eq 'GET') {
+              if (Test-Path $inventoryFile) {
+                try {
+                  $resData.inventory = Get-Content $inventoryFile | ConvertFrom-Json
+                }
+                catch {
+                  $resData.inventory = @()
+                }
+              }
+              else {
+                $resData.inventory = @()
+              }
+            }
+            elseif ($method -eq 'POST') {
+              try {
+                $reqBodyStr | Out-File $inventoryFile
+                $resData.message = "Inventory saved"
+              }
+              catch {
+                $resData.success = $false
+                $resData.message = $_.Exception.Message
               }
             }
           }
@@ -353,11 +397,20 @@ try {
                   $applicable = @()
                   if ($resData.system.platform -ne 'Unknown') {
                     Write-ApiLog "Fetching available updates from HP for platform $($resData.system.platform)..."
-                    $softpaqs = Get-HPSoftpaqList -Platform $resData.system.platform -Category "Firmware", "Driver", "Bios" -ReleaseType "Critical", "Recommended" -ErrorAction SilentlyContinue
+                    $softpaqs = Get-HPSoftpaqList -Platform $resData.system.platform -Category "Firmware", "Driver" -ReleaseType "Critical", "Recommended" -ErrorAction SilentlyContinue
                     if ($softpaqs) {
                       foreach ($sp in $softpaqs) {
-                        if ($sp.Id) { $applicable += $sp.Id }
-                        elseif ($sp.Number) { $applicable += $sp.Number }
+                        $pkgId = if ($sp.Id) { $sp.Id } elseif ($sp.Number) { $sp.Number } else { $null }
+                        if ($pkgId) { $applicable += @{ id = $pkgId; type = 'SoftPaq' } }
+                      }
+                    }
+                    
+                    $biosUpdates = Get-HPBIOSUpdates -Platform $resData.system.platform -ErrorAction SilentlyContinue
+                    if ($biosUpdates) {
+                      # Ensure it's an array and capture versions
+                      $bArray = if ($biosUpdates -is [array]) { $biosUpdates } else { @($biosUpdates) }
+                      foreach ($b in $bArray) {
+                        if ($b.Version) { $applicable += @{ id = $b.Version; type = 'BIOS'; platform = $resData.system.platform } }
                       }
                     }
                   }
@@ -393,49 +446,62 @@ try {
                     continue
                   }
                                   
-                  foreach ($pkg in $packages) {
-                    Write-Verbose "Ensuring package $pkg is downloaded locally to $repoPath..."
-                    Get-HPSoftpaq -Number $pkg -Directory $repoPath -SaveAs "$pkg.exe" -ErrorAction SilentlyContinue | Out-Null
-                    
-                    $localPkgPath = Join-Path $repoPath "$pkg.exe"
-                    if (-not (Test-Path $localPkgPath)) {
-                      $localPkgPath = Join-Path $repoPath $pkg
+                  foreach ($pkgObj in $packages) {
+                    if ($pkgObj.type -eq 'BIOS') {
+                      Write-Verbose "Starting BIOS Update ($($pkgObj.id)) on $pctarget..."
+                      try {
+                        Get-HPBIOSUpdates -Platform $pkgObj.platform -Flash -Yes -BitLocker Suspend -Target $pctarget -ErrorAction Stop
+                        Write-Verbose "Triggered BIOS update successfully on $pctarget."
+                      }
+                      catch {
+                        Write-Error "Failed to flash BIOS on $pctarget : $_"
+                      }
+                    }
+                    else {
+                      $pkg = $pkgObj.id
+                      Write-Verbose "Ensuring package $pkg is downloaded locally to $repoPath..."
+                      Get-HPSoftpaq -Number $pkg -Directory $repoPath -SaveAs "$pkg.exe" -ErrorAction SilentlyContinue | Out-Null
+                      
+                      $localPkgPath = Join-Path $repoPath "$pkg.exe"
                       if (-not (Test-Path $localPkgPath)) {
-                        Write-Error "Failed to download Package $pkg to repository $repoPath"
-                        continue
+                        $localPkgPath = Join-Path $repoPath $pkg
+                        if (-not (Test-Path $localPkgPath)) {
+                          Write-Error "Failed to download Package $pkg to repository $repoPath"
+                          continue
+                        }
                       }
-                    }
 
-                    Write-Verbose "Deploying $pkg to $pctarget..."
-                                      
-                    try {
-                      $fileName = Split-Path $localPkgPath -Leaf
-                      $remoteSmbDest = "\\$pctarget\c$\Windows\Temp\$fileName"
-                      $remoteLocalDest = "C:\Windows\Temp\$fileName"
-                                          
-                      Write-Verbose "Copying $fileName to $pctarget via SMB..."
-                      Copy-Item -Path $localPkgPath -Destination $remoteSmbDest -Force -ErrorAction Stop
-                                          
-                      Write-Verbose "Executing $fileName on $pctarget via WMI..."
-                      $opt = New-CimSessionOption -Protocol Dcom
-                      $session = New-CimSession -ComputerName $pctarget -SessionOption $opt -ErrorAction Stop
-                      
-                      $commandLine = "$remoteLocalDest /s /a /s /q /x"
-                      $invokeResult = Invoke-CimMethod -CimSession $session -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $commandLine } -ErrorAction Stop
-                      
-                      if ($invokeResult.ReturnValue -eq 0) {
-                        Write-Verbose "Deploy Result ($pctarget): Process started successfully (PID: $($invokeResult.ProcessId)). Package is installing silently."
+                      Write-Verbose "Deploying $pkg to $pctarget..."
+                                        
+                      try {
+                        $fileName = Split-Path $localPkgPath -Leaf
+                        $remoteSmbDest = "\\$pctarget\c$\Windows\Temp\$fileName"
+                        $remoteLocalDest = "C:\Windows\Temp\$fileName"
+                                            
+                        Write-Verbose "Copying $fileName to $pctarget via SMB..."
+                        Copy-Item -Path $localPkgPath -Destination $remoteSmbDest -Force -ErrorAction Stop
+                                            
+                        Write-Verbose "Executing $fileName on $pctarget via WMI..."
+                        $opt = New-CimSessionOption -Protocol Dcom
+                        $session = New-CimSession -ComputerName $pctarget -SessionOption $opt -ErrorAction Stop
+                        
+                        $commandLine = "$remoteLocalDest /s /a /s /q /x"
+                        $invokeResult = Invoke-CimMethod -CimSession $session -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $commandLine } -ErrorAction Stop
+                        
+                        if ($invokeResult.ReturnValue -eq 0) {
+                          Write-Verbose "Deploy Result ($pctarget): Process started successfully (PID: $($invokeResult.ProcessId)). Package is installing silently."
+                        }
+                        else {
+                          Write-Error "Deploy Result ($pctarget): Failed to start process. WMI Return Value: $($invokeResult.ReturnValue)"
+                        }
                       }
-                      else {
-                        Write-Error "Deploy Result ($pctarget): Failed to start process. WMI Return Value: $($invokeResult.ReturnValue)"
+                      catch {
+                        Write-Error "Deployment failed on $pctarget : $_"
                       }
-                    }
-                    catch {
-                      Write-Error "Deployment failed on $pctarget : $_"
-                    }
-                    finally {
-                      if (Get-Variable -Name 'session' -ErrorAction SilentlyContinue) {
-                        Remove-CimSession -Session $session -ErrorAction SilentlyContinue
+                      finally {
+                        if (Get-Variable -Name 'session' -ErrorAction SilentlyContinue) {
+                          Remove-CimSession -Session $session -ErrorAction SilentlyContinue
+                        }
                       }
                     }
                   }

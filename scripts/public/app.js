@@ -81,11 +81,21 @@ async function apiCall(endpoint, method = 'POST', data = null) {
     }
 }
 
+async function saveInventory() {
+    await apiCall('/inventory', 'POST', fleetState);
+}
+
 // Initial Load
 async function initApp() {
     const res = await apiCall('/path', 'GET');
     if (res && res.path) {
         repoPathInput.value = res.path;
+    }
+
+    const invRes = await apiCall('/inventory', 'GET');
+    if (invRes && invRes.inventory) {
+        fleetState = invRes.inventory;
+        renderFleetTable();
     }
 
     // Refresh info table
@@ -288,6 +298,7 @@ function renderFleetTable() {
         btn.addEventListener('click', (e) => {
             fleetState.splice(e.currentTarget.dataset.index, 1);
             renderFleetTable();
+            saveInventory();
         });
     });
 
@@ -342,6 +353,7 @@ document.getElementById('btn-confirm-add').addEventListener('click', () => {
             system: null
         });
         renderFleetTable();
+        saveInventory();
         scanEndpoint(fleetState.length - 1);
     }
 });
@@ -370,6 +382,7 @@ async function scanEndpoint(index) {
         endpoint.status = 'Offline';
     }
     renderFleetTable();
+    saveInventory();
 }
 
 // Select All logic
