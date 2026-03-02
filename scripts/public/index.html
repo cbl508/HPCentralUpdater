@@ -8,7 +8,6 @@
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <!-- FontAwesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 
@@ -31,21 +30,31 @@
             </div>
 
             <ul class="nav-links">
-                <li><button class="nav-btn active" data-tab="repository"><i class="fa-solid fa-server"></i>
+                <li><button class="nav-btn active" data-tab="dashboard"><i class="fa-solid fa-chart-pie"></i>
+                        Dashboard</button></li>
+                <li><button class="nav-btn" data-tab="fleet"><i class="fa-solid fa-network-wired"></i> Fleet</button>
+                </li>
+                <li><button class="nav-btn" data-tab="repository"><i class="fa-solid fa-database"></i>
                         Repository</button></li>
                 <li><button class="nav-btn" data-tab="settings"><i class="fa-solid fa-gear"></i> Settings</button></li>
-                <li><button class="nav-btn" data-tab="fleet"><i class="fa-solid fa-server"></i> Fleet</button></li>
+                <li><button class="nav-btn" data-tab="tasks"><i class="fa-solid fa-list-check"></i> Tasks</button></li>
                 <li><button class="nav-btn" data-tab="logs"><i class="fa-solid fa-terminal"></i> Logs</button></li>
             </ul>
 
-            <div class="repo-status">
-                <p class="status-label">Current Repository</p>
-                <div class="path-input-group">
-                    <input type="text" id="repo-path" placeholder="C:\Repository" />
-                    <button id="btn-set-path" class="btn btn-icon" title="Save Path"><i
-                            class="fa-solid fa-check"></i></button>
-                    <button id="btn-open-path" class="btn btn-icon" title="Open Folder in File Explorer"><i
-                            class="fa-solid fa-folder-open"></i></button>
+            <div class="sidebar-footer">
+                <div class="repo-status">
+                    <p class="status-label">Repository</p>
+                    <div class="path-input-group">
+                        <input type="text" id="repo-path" placeholder="C:\Repository" />
+                        <button id="btn-set-path" class="btn btn-icon" title="Save Path"><i
+                                class="fa-solid fa-check"></i></button>
+                        <button id="btn-open-path" class="btn btn-icon" title="Open Folder"><i
+                                class="fa-solid fa-folder-open"></i></button>
+                    </div>
+                </div>
+                <div class="server-status">
+                    <span class="status-dot online"></span>
+                    <span class="text-muted text-sm">Server Online</span>
                 </div>
             </div>
         </nav>
@@ -53,80 +62,180 @@
         <!-- Main Content Area -->
         <main class="content-area glass-panel">
 
-            <!-- Repository Tab -->
-            <section id="tab-repository" class="tab-pane active fade-in">
+            <!-- Dashboard Tab -->
+            <section id="tab-dashboard" class="tab-pane active fade-in">
                 <div class="tab-header">
-                    <h2><i class="fa-solid fa-server"></i> Management Dashboard</h2>
-                    <p>Initialize, synchronize, and clean up your HP repository.</p>
+                    <h2><i class="fa-solid fa-chart-pie"></i> Compliance Dashboard</h2>
+                    <p>Fleet health overview and compliance status at a glance.</p>
                 </div>
 
-                <div class="actions-grid">
-                    <button class="btn btn-primary action-btn hover-grow desc-btn" id="btn-sync">
-                        <div class="btn-top">
-                            <div class="btn-icon-large"><i class="fa-solid fa-rotate"></i></div>
-                            <span>Run Sync</span>
+                <div class="dashboard-grid">
+                    <div class="stat-card glass-card">
+                        <div class="stat-icon" style="color: var(--accent-primary)"><i class="fa-solid fa-server"></i>
                         </div>
-                        <span class="btn-desc">Downloads files missing in the local repository from HP.</span>
-                    </button>
-                    <button class="btn btn-primary action-btn hover-grow desc-btn" id="btn-cleanup">
-                        <div class="btn-top">
-                            <div class="btn-icon-large"><i class="fa-solid fa-broom"></i></div>
-                            <span>Run Cleanup</span>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-total">0</span>
+                            <span class="stat-label">Total Endpoints</span>
                         </div>
-                        <span class="btn-desc">Deletes packages that no longer match active filters.</span>
-                    </button>
-                    <button class="btn btn-secondary action-btn hover-grow desc-btn" id="btn-info">
-                        <div class="btn-top">
-                            <div class="btn-icon-large"><i class="fa-solid fa-circle-info"></i></div>
-                            <span>Refresh Info</span>
+                    </div>
+                    <div class="stat-card glass-card">
+                        <div class="stat-icon" style="color: var(--success)"><i class="fa-solid fa-signal"></i></div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-online">0</span>
+                            <span class="stat-label">Online</span>
                         </div>
-                        <span class="btn-desc">Reloads the repository state and configurations.</span>
-                    </button>
+                    </div>
+                    <div class="stat-card glass-card">
+                        <div class="stat-icon" style="color: #fbbf24"><i class="fa-solid fa-triangle-exclamation"></i>
+                        </div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-outdated">0</span>
+                            <span class="stat-label">Needs Updates</span>
+                        </div>
+                    </div>
+                    <div class="stat-card glass-card">
+                        <div class="stat-icon" style="color: var(--success)"><i class="fa-solid fa-circle-check"></i>
+                        </div>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-compliant">0</span>
+                            <span class="stat-label">Up to Date</span>
+                        </div>
+                    </div>
                 </div>
 
-                <div class="input-card glass-card">
+                <div class="dashboard-row">
+                    <div class="glass-card compliance-chart-card">
+                        <h3>Compliance Rate</h3>
+                        <div class="donut-container">
+                            <svg class="donut" viewBox="0 0 120 120">
+                                <circle class="donut-bg" cx="60" cy="60" r="52" />
+                                <circle class="donut-fill" id="compliance-ring" cx="60" cy="60" r="52" />
+                                <text class="donut-text" x="60" y="60" id="compliance-pct">0%</text>
+                                <text class="donut-subtext" x="60" y="76">compliant</text>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="glass-card fleet-summary-card">
+                        <h3>Fleet Summary</h3>
+                        <div id="fleet-summary-list" class="fleet-summary-list">
+                            <p class="text-muted text-sm">No endpoints tracked yet.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Fleet Management Tab -->
+            <section id="tab-fleet" class="tab-pane fade-in">
+                <div class="tab-header flex-between">
+                    <div>
+                        <h2><i class="fa-solid fa-network-wired"></i> Fleet Management</h2>
+                        <p>Manage endpoints, scan for missing updates, and push SoftPaqs.</p>
+                    </div>
+                    <div class="header-actions">
+                        <button class="btn btn-sm btn-secondary" id="btn-network-scan" title="Scan Network">
+                            <i class="fa-solid fa-radar"></i> Scan Network
+                        </button>
+                        <button class="btn btn-sm btn-primary" id="btn-add-endpoint">
+                            <i class="fa-solid fa-plus"></i> Add Endpoint
+                        </button>
+                    </div>
+                </div>
+
+                <div class="fleet-layout">
+                    <div class="fleet-table-wrapper">
+                        <div class="glass-card fleet-table-container">
+                            <table class="fleet-table">
+                                <thead>
+                                    <tr>
+                                        <th width="40"><input type="checkbox" id="fleet-select-all"
+                                                class="row-checkbox"></th>
+                                        <th>Endpoint</th>
+                                        <th>Status</th>
+                                        <th>Model</th>
+                                        <th>OS</th>
+                                        <th>Updates</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="fleet-table-body"></tbody>
+                            </table>
+
+                            <div id="fleet-empty-state" class="empty-state">
+                                <i class="fa-solid fa-desktop"></i>
+                                <p>No endpoints added yet. Click "Add Endpoint" or "Scan Network" to get started.</p>
+                            </div>
+                        </div>
+
+                        <!-- Bulk Actions -->
+                        <div class="deploy-controls glass-card hidden" id="fleet-bulk-actions">
+                            <div style="display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
+                                <button class="btn btn-sm btn-accent" id="btn-bulk-deploy"><i
+                                        class="fa-solid fa-bolt"></i> Deploy Selected</button>
+                                <button class="btn btn-sm btn-danger" id="btn-bulk-delete"><i
+                                        class="fa-solid fa-trash"></i> Remove Selected</button>
+                                <span class="text-muted text-sm">Select endpoints using checkboxes, then choose an
+                                    action.</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Detail Panel (slide-out) -->
+                    <div id="fleet-detail-panel" class="fleet-detail-panel hidden">
+                        <div class="detail-header">
+                            <h3 id="detail-hostname">—</h3>
+                            <button class="btn-close" id="btn-close-detail"><i class="fa-solid fa-xmark"></i></button>
+                        </div>
+                        <div id="detail-content" class="detail-content">
+                            <!-- Populated by JS -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Repository Tab -->
+            <section id="tab-repository" class="tab-pane fade-in">
+                <div class="tab-header flex-between">
+                    <div>
+                        <h2><i class="fa-solid fa-database"></i> Repository</h2>
+                        <p>Browse downloaded SoftPaqs and repository contents.</p>
+                    </div>
+                    <button class="btn btn-sm btn-secondary" id="btn-info"><i class="fa-solid fa-rotate-right"></i>
+                        Refresh</button>
+                </div>
+
+                <div class="input-card glass-card compact-card">
                     <label for="ref-url">Reference URL</label>
                     <input type="url" id="ref-url" value="https://hpia.hpcloud.hp.com/ref" />
                 </div>
 
                 <div class="info-card glass-card">
                     <h3>Repository Information</h3>
-                    <pre id="repo-info-text">Click "Refresh Info" to load repository details...</pre>
+                    <pre id="repo-info-text">Click "Refresh" to load repository details...</pre>
                 </div>
             </section>
 
             <!-- Settings Tab -->
             <section id="tab-settings" class="tab-pane fade-in">
                 <div class="tab-header">
-                    <h2><i class="fa-solid fa-gear"></i> Configuration Settings</h2>
-                    <p>Adjust the repository behaviors.</p>
+                    <h2><i class="fa-solid fa-gear"></i> Settings</h2>
+                    <p>Configure repository behaviors and run maintenance tasks.</p>
                 </div>
 
-                <div class="info-card glass-card"
-                    style="margin-bottom: 2rem; border-left: 4px solid var(--accent-danger);">
-                    <h3>Advanced Actions</h3>
-                    <p class="text-muted" style="margin-bottom: 1rem;">These actions should only be run once during
-                        initial setup or troubleshooting.</p>
-                    <button class="btn btn-secondary hover-grow desc-btn" id="btn-init" style="max-width: 300px;">
-                        <div class="btn-top">
-                            <div class="btn-icon"><i class="fa-solid fa-box-open"></i></div>
-                            <span>Initialize Repo</span>
-                        </div>
-                        <span class="btn-desc">Creates a new repository metadata file in the configuration
-                            folder.</span>
-                    </button>
-                    <button class="btn btn-danger hover-grow desc-btn" id="btn-shutdown"
-                        style="max-width: 300px; margin-top: 1rem;">
-                        <div class="btn-top">
-                            <div class="btn-icon"><i class="fa-solid fa-power-off"></i></div>
-                            <span>Shut Down Server</span>
-                        </div>
-                        <span class="btn-desc">Stops the background PowerShell API process entirely.</span>
-                    </button>
+                <div class="glass-card" style="margin-bottom: 1.5rem;">
+                    <h3 style="margin-bottom:1rem;">Repository Actions</h3>
+                    <div class="actions-row">
+                        <button class="btn btn-sm btn-primary" id="btn-sync"><i class="fa-solid fa-rotate"></i> Run
+                            Sync</button>
+                        <button class="btn btn-sm btn-secondary" id="btn-cleanup"><i class="fa-solid fa-broom"></i>
+                            Cleanup</button>
+                        <button class="btn btn-sm btn-secondary" id="btn-init"><i class="fa-solid fa-box-open"></i>
+                            Initialize Repo</button>
+                    </div>
                 </div>
 
                 <form id="settings-form" class="form-container glass-card">
-                    <div class="form-row">
+                    <h3 style="margin-bottom:1.5rem;">Configuration</h3>
+                    <div class="form-row two-cols">
                         <div class="input-group">
                             <label for="s-missing">On Remote File Not Found</label>
                             <div class="select-wrapper">
@@ -136,8 +245,6 @@
                                 </select>
                             </div>
                         </div>
-                    </div>
-                    <div class="form-row">
                         <div class="input-group">
                             <label for="s-cache">Offline Cache Mode</label>
                             <div class="select-wrapper">
@@ -154,7 +261,7 @@
                             <div class="select-wrapper">
                                 <select id="s-report">
                                     <option value="CSV">CSV</option>
-                                    <option value="JSon">JSon</option>
+                                    <option value="JSon">JSON</option>
                                     <option value="XML">XML</option>
                                     <option value="ExcelCSV">ExcelCSV</option>
                                 </select>
@@ -162,60 +269,17 @@
                         </div>
                     </div>
                     <div class="form-actions right">
-                        <button type="submit" class="btn btn-primary btn-glow"><i class="fa-solid fa-floppy-disk"></i>
+                        <button type="submit" class="btn btn-sm btn-primary"><i class="fa-solid fa-floppy-disk"></i>
                             Apply Settings</button>
                     </div>
                 </form>
-            </section>
 
-            <!-- Fleet Management Tab -->
-            <section id="tab-fleet" class="tab-pane fade-in">
-                <div class="tab-header flex-between">
-                    <div>
-                        <h2><i class="fa-solid fa-network-wired"></i> Fleet Management</h2>
-                        <p>Manage endpoints, scan for missing updates, and push SoftPaqs.</p>
-                    </div>
-                    <button class="btn btn-primary btn-glow" id="btn-add-endpoint"><i class="fa-solid fa-plus"></i> Add
-                        Endpoint</button>
-                </div>
-
-                <div class="glass-card fleet-table-container">
-                    <table class="fleet-table">
-                        <thead>
-                            <tr>
-                                <th width="40"><input type="checkbox" id="fleet-select-all" class="row-checkbox"></th>
-                                <th>Hostname</th>
-                                <th>Status</th>
-                                <th>Model & Platform</th>
-                                <th>OS Version</th>
-                                <th>Updates</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="fleet-table-body">
-                            <!-- Populated via JS -->
-                        </tbody>
-                    </table>
-
-                    <div id="fleet-empty-state" class="empty-state">
-                        <i class="fa-solid fa-desktop"></i>
-                        <p>No endpoints added yet. Click "Add Endpoint" to build your fleet list.</p>
-                    </div>
-                </div>
-
-                <!-- Bulk Actions -->
-                <div class="deploy-controls glass-card hidden" id="fleet-bulk-actions">
-                    <div class="form-row full-width">
-                        <div class="input-group">
-                            <label>Bulk Deploy to Selected</label>
-                            <div class="input-card" style="display: flex; gap: 1rem; align-items: center;">
-                                <button class="btn btn-accent btn-glow" id="btn-bulk-deploy"><i
-                                        class="fa-solid fa-bolt"></i> Push Applicable Updates</button>
-                                <span class="text-muted" style="font-size: 0.9rem;">Installs all missing SoftPaqs
-                                    discovered during scanning.</span>
-                            </div>
-                        </div>
-                    </div>
+                <div class="glass-card danger-zone">
+                    <h3><i class="fa-solid fa-triangle-exclamation"></i> Danger Zone</h3>
+                    <p class="text-muted text-sm" style="margin-bottom:1rem;">These actions affect the running
+                        server.</p>
+                    <button class="btn btn-sm btn-danger" id="btn-shutdown"><i class="fa-solid fa-power-off"></i> Shut
+                        Down Server</button>
                 </div>
             </section>
 
@@ -226,7 +290,7 @@
                         <h2><i class="fa-solid fa-terminal"></i> Execution Logs</h2>
                         <p>Real-time view of backend processes.</p>
                     </div>
-                    <button id="btn-refresh-logs" class="btn btn-secondary btn-icon"><i
+                    <button id="btn-refresh-logs" class="btn btn-sm btn-secondary"><i
                             class="fa-solid fa-rotate-right"></i></button>
                 </div>
 
@@ -234,16 +298,32 @@
                     <pre id="log-text"></pre>
                 </div>
             </section>
+
+            <!-- Tasks Tab -->
+            <section id="tab-tasks" class="tab-pane fade-in">
+                <div class="tab-header flex-between">
+                    <div>
+                        <h2><i class="fa-solid fa-list-check"></i> Background Tasks</h2>
+                        <p>Monitor running and completed background tasks.</p>
+                    </div>
+                    <button id="btn-refresh-tasks" class="btn btn-sm btn-secondary"><i
+                            class="fa-solid fa-rotate-right"></i> Refresh</button>
+                </div>
+
+                <div id="tasks-container" class="tasks-container">
+                    <p class="text-muted text-sm">No tasks have been run yet.</p>
+                </div>
+            </section>
         </main>
     </div>
 
-    <!-- Notification Toast -->
+    <!-- Toast -->
     <div id="toast" class="toast hidden">
         <i class="fa-solid fa-circle-check toast-icon"></i>
         <span id="toast-msg">Action successful!</span>
     </div>
 
-    <!-- Global Progress Overlay -->
+    <!-- Loading Overlay -->
     <div id="loading-overlay" class="loading-overlay hidden">
         <div class="spinner"></div>
         <p id="loading-text">Processing...</p>
@@ -262,11 +342,53 @@
                     <input type="text" id="endpoint-hostname" placeholder="e.g., DESKTOP-1234 or 192.168.1.50"
                         autocomplete="off" />
                 </div>
+                <p id="modal-error" class="modal-inline-error hidden"></p>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" id="btn-cancel-modal">Cancel</button>
-                <button class="btn btn-primary btn-glow" id="btn-confirm-add">Scan Endpoint</button>
+                <button class="btn btn-sm btn-secondary" id="btn-cancel-modal">Cancel</button>
+                <button class="btn btn-sm btn-primary" id="btn-confirm-add">Scan Endpoint</button>
             </div>
+            <p class="modal-hint"><kbd>Enter</kbd> to confirm &middot; <kbd>Esc</kbd> to cancel</p>
+        </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div id="delete-confirm-modal" class="modal-overlay hidden">
+        <div class="modal glass-card fade-in">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-triangle-exclamation"
+                        style="color: var(--danger); margin-right: 0.5rem;"></i>Confirm Removal</h3>
+                <button class="btn-close" id="btn-close-delete-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to remove <strong id="delete-endpoint-name"></strong> from the fleet?</p>
+                <p class="text-muted text-sm" style="margin-top: 0.5rem;">This action cannot be undone.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-sm btn-secondary" id="btn-cancel-delete">Cancel</button>
+                <button class="btn btn-sm btn-danger" id="btn-confirm-delete"><i class="fa-solid fa-trash"></i>
+                    Remove</button>
+            </div>
+            <p class="modal-hint"><kbd>Enter</kbd> to confirm &middot; <kbd>Esc</kbd> to cancel</p>
+        </div>
+    </div>
+
+    <!-- Generic Action Confirmation Modal -->
+    <div id="action-confirm-modal" class="modal-overlay hidden">
+        <div class="modal glass-card fade-in">
+            <div class="modal-header">
+                <h3 id="action-confirm-title">Confirm Action</h3>
+                <button class="btn-close" id="btn-close-action-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <p id="action-confirm-desc"></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-sm btn-secondary" id="btn-cancel-action">Cancel</button>
+                <button class="btn btn-sm btn-primary" id="btn-confirm-action"><i class="fa-solid fa-check"></i>
+                    Proceed</button>
+            </div>
+            <p class="modal-hint"><kbd>Enter</kbd> to confirm &middot; <kbd>Esc</kbd> to cancel</p>
         </div>
     </div>
 

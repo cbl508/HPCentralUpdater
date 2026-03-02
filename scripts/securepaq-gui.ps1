@@ -47,6 +47,7 @@ foreach ($cmd in $ps2exeOverrides) {
 $script:apiLogs = New-Object System.Collections.Generic.List[string]
 $script:apiLogsMaxCount = 500
 $script:activeJobs = @()
+$script:taskRegistry = @{}
 
 $AppDataDir = Join-Path $env:APPDATA "CentralHPUpdaterManager"
 if (-not (Test-Path $AppDataDir)) { New-Item -ItemType Directory -Path $AppDataDir -Force | Out-Null }
@@ -86,36 +87,137 @@ function Update-ActiveJobs {
   foreach ($job in $script:activeJobs) {
     if ($null -eq $job) { continue }
 
-    # Capture main output, ignoring terminating errors so polling doesn't break
+    $taskId = "task_$($job.Id)"
+    if (-not $script:taskRegistry.ContainsKey($taskId)) {
+      $script:taskRegistry[$taskId] = @{
+        id        = $job.Id
+        name      = "Task $($job.Id)"
+        state     = 'Running'
+        startTime = $job.PSBeginTime
+        messages  = New-Object System.Collections.Generic.List[string]
+        progress  = @{ total = 0; completed = 0; percentage = 0; currentStep = ''; results = @() }
+      }
+    }
+    $taskEntry = $script:taskRegistry[$taskId]
+
+    # Capture main output
     try {
       $results = Receive-Job -Job $job -ErrorAction SilentlyContinue
-      foreach ($res in $results) { Write-ApiLog "[Task $($job.Id)] Output: $res" }
+      foreach ($res in $results) {
+        $msg = "[Task $($job.Id)] Output: $res"
+        Write-ApiLog $msg
+        $taskEntry.messages.Add($msg)
+      }
     }
     catch {
-      Write-ApiLog "[Task $($job.Id)] ERROR: $_"
+      $msg = "[Task $($job.Id)] ERROR: $_"
+      Write-ApiLog $msg
+      $taskEntry.messages.Add($msg)
     }
 
-    # Capture verbose, err, warning streams from child runspace
+    # Capture verbose, err, warning, info, progress streams
     if ($job.ChildJobs.Count -gt 0) {
       foreach ($child in $job.ChildJobs) {
-        $child.Verbose.ReadAll() | ForEach-Object { Write-ApiLog "[Task $($job.Id)] $_" }
-        $child.Warning.ReadAll() | ForEach-Object { Write-ApiLog "[Task $($job.Id)] WARN: $_" }
-        $child.Error.ReadAll()   | ForEach-Object { Write-ApiLog "[Task $($job.Id)] ERROR: $_" }
-        $child.Information.ReadAll() | ForEach-Object { Write-ApiLog "[Task $($job.Id)] INFO: $_" }
+        $child.Verbose.ReadAll() | ForEach-Object {
+          # Filter out noisy PowerShell/CIM internal messages
+          if ($_ -match '^(Importing|Exporting) (alias|function|cmdlet)' -or
+            $_ -match '^Perform operation' -or
+            $_ -match "^Operation '" -or
+            $_ -match '^Loading module' -or
+            $_ -match '^Loaded module') {
+            return
+          }
+
+          $msg = "[Task $($job.Id)] $_"
+          Write-ApiLog $msg
+          $taskEntry.messages.Add($msg)
+
+          # Always update currentStep with latest verbose line for live status
+          $taskEntry.progress.currentStep = "$_"
+
+          # Parse [X/Y] progress counters from deploy messages
+          if ($_ -match '\[(\d+)/(\d+)\]') {
+            $taskEntry.progress.completed = [int]$Matches[1]
+            $taskEntry.progress.total = [int]$Matches[2]
+            if ($taskEntry.progress.total -gt 0) {
+              $taskEntry.progress.percentage = [math]::Round(($taskEntry.progress.completed / $taskEntry.progress.total) * 100)
+            }
+          }
+
+          # Parse result markers: EXITCODE:N for exit codes
+          if ($_ -match 'EXITCODE:(\d+)\s+for\s+(\S+)') {
+            $exitCode = [int]$Matches[1]
+            $pkgId = $Matches[2]
+            $status = if ($exitCode -eq 0) { 'Success' } elseif ($exitCode -eq 3010) { 'Reboot Required' } else { "Error ($exitCode)" }
+            $taskEntry.progress.results += @{ id = $pkgId; exitCode = $exitCode; status = $status }
+          }
+        }
+        $child.Warning.ReadAll() | ForEach-Object {
+          $msg = "[Task $($job.Id)] [!] WARNING: $_"
+          Write-ApiLog $msg
+          $taskEntry.messages.Add($msg)
+          $taskEntry.progress.currentStep = "[!] $_"
+        }
+        $child.Error.ReadAll() | ForEach-Object {
+          $msg = "[Task $($job.Id)] [X] ERROR: $_"
+          Write-ApiLog $msg
+          $taskEntry.messages.Add($msg)
+          $taskEntry.progress.currentStep = "[X] $_"
+        }
+        $child.Information.ReadAll() | ForEach-Object {
+          $infoStr = "$_"
+          if ($infoStr -match '^Importing ' -or $infoStr -match '^Perform operation' -or $infoStr -match "^Operation '") { return }
+          $msg = "[Task $($job.Id)] [i] $infoStr"
+          Write-ApiLog $msg
+          $taskEntry.messages.Add($msg)
+        }
         $child.Progress.ReadAll() | ForEach-Object {
+          # Skip noisy module loading progress
+          if ($_.Activity -match 'Preparing modules' -or $_.Activity -match 'Loading module') { return }
           if ($_.PercentComplete -ge 0) {
-            Write-ApiLog "[Task $($job.Id)] PROGRESS: $($_.Activity) - $($_.StatusDescription) [$($_.PercentComplete)%]"
+            $msg = "[Task $($job.Id)] [~] $($_.Activity): $($_.StatusDescription) [$($_.PercentComplete)%]"
+            if ($taskEntry.progress.total -eq 0) {
+              $taskEntry.progress.percentage = $_.PercentComplete
+            }
           }
           else {
-            Write-ApiLog "[Task $($job.Id)] PROGRESS: $($_.Activity) - $($_.StatusDescription)"
+            $msg = "[Task $($job.Id)] [~] $($_.Activity): $($_.StatusDescription)"
           }
+          $taskEntry.progress.currentStep = "$($_.Activity): $($_.StatusDescription)"
+          Write-ApiLog $msg
+          $taskEntry.messages.Add($msg)
         }
       }
     }
 
-    # If job finished, remove from tracking
+    # If job finished, update state
     if ($job.State -ne 'Running') {
-      Write-ApiLog "[Task $($job.Id)] Finished with state: $($job.State)"
+      $successCount = ($taskEntry.progress.results | Where-Object { $_.exitCode -eq 0 }).Count
+      $totalResults = $taskEntry.progress.results.Count
+      $hasErrors = ($taskEntry.messages | Where-Object { $_ -match '\[X\] ERROR' -or $_ -match 'failed' }).Count -gt 0
+      $allFailed = $totalResults -gt 0 -and $successCount -eq 0
+      
+      if ($job.State -eq 'Completed' -and (-not $hasErrors) -and (-not $allFailed)) {
+        $taskEntry.state = 'Completed'
+      } elseif ($job.State -eq 'Completed' -and $hasErrors -or $allFailed) {
+        $taskEntry.state = 'Failed'
+      } else {
+        $taskEntry.state = 'Failed'
+      }
+      
+      $taskEntry.progress.percentage = 100
+      if ($totalResults -gt 0) {
+        $taskEntry.progress.currentStep = "Finished: $successCount/$totalResults packages succeeded"
+      }
+      elseif ($hasErrors) {
+        $taskEntry.progress.currentStep = "Failed"
+      }
+      else {
+        $taskEntry.progress.currentStep = "Finished ($($job.State))"
+      }
+      $finishMsg = "[Task $($job.Id)] [OK] Task finished with state: $($taskEntry.state). $($taskEntry.messages.Count) messages captured."
+      Write-ApiLog $finishMsg
+      $taskEntry.messages.Add($finishMsg)
       Remove-Job -Job $job -Force
     }
   }
@@ -239,7 +341,13 @@ try {
             if ($method -eq 'GET') {
               if (Test-Path $inventoryFile) {
                 try {
-                  $resData.inventory = Get-Content $inventoryFile | ConvertFrom-Json
+                  $invObj = Get-Content $inventoryFile -Raw | ConvertFrom-Json
+                  if ($null -ne $invObj) {
+                    $resData.inventory = @($invObj)
+                  }
+                  else {
+                    $resData.inventory = @()
+                  }
                 }
                 catch {
                   $resData.inventory = @()
@@ -251,7 +359,7 @@ try {
             }
             elseif ($method -eq 'POST') {
               try {
-                $reqBodyStr | Out-File $inventoryFile
+                Set-Content -Path $inventoryFile -Value $reqBodyStr -Encoding UTF8
                 $resData.message = "Inventory saved"
               }
               catch {
@@ -264,6 +372,29 @@ try {
             if ($method -eq 'GET') {
               Update-ActiveJobs
               $resData.logs = $script:apiLogs.ToArray()
+            }
+          }
+          '^/api/tasks$' {
+            if ($method -eq 'GET') {
+              Update-ActiveJobs
+              $taskList = @()
+              foreach ($key in $script:taskRegistry.Keys) {
+                $t = $script:taskRegistry[$key]
+                $recentMsgs = @()
+                if ($t.messages -and $t.messages.Count -gt 0) {
+                  $start = [Math]::Max(0, $t.messages.Count - 20)
+                  $recentMsgs = @($t.messages.GetRange($start, $t.messages.Count - $start))
+                }
+                $taskList += @{
+                  id        = $t.id
+                  name      = $t.name
+                  state     = $t.state
+                  startTime = if ($t.startTime) { $t.startTime.ToString('yyyy-MM-dd HH:mm:ss') } else { '' }
+                  messages  = $recentMsgs
+                  progress  = if ($t.progress) { $t.progress } else { @{ total = 0; completed = 0; percentage = 0; currentStep = ''; results = @() } }
+                }
+              }
+              $resData.tasks = $taskList
             }
           }
           '^/api/info$' {
@@ -313,45 +444,122 @@ try {
               Pop-Location
             }
           }
+          '^/api/tasks/abort$' {
+            if ($method -eq 'POST') {
+              $taskId = $reqBody.taskId
+              if (-not $taskId) { throw "taskId is required" }
+              $taskKey = "task_$taskId"
+              $matchedJob = $script:activeJobs | Where-Object { $_.Id -eq $taskId }
+              if ($matchedJob) {
+                Stop-Job -Job $matchedJob -ErrorAction SilentlyContinue
+                Remove-Job -Job $matchedJob -Force -ErrorAction SilentlyContinue
+                $script:activeJobs = @($script:activeJobs | Where-Object { $_.Id -ne $taskId })
+                Write-ApiLog "[Task $taskId] Aborted by user."
+              }
+              if ($script:taskRegistry.ContainsKey($taskKey)) {
+                $script:taskRegistry[$taskKey].state = 'Aborted'
+                if ($script:taskRegistry[$taskKey].progress) {
+                  $script:taskRegistry[$taskKey].progress.percentage = 100
+                  $script:taskRegistry[$taskKey].progress.currentStep = 'Aborted by user'
+                }
+                else {
+                  $script:taskRegistry[$taskKey].progress = @{ total = 0; completed = 0; percentage = 100; currentStep = 'Aborted by user'; results = @() }
+                }
+                if ($script:taskRegistry[$taskKey].messages) {
+                  $script:taskRegistry[$taskKey].messages.Add("[Task $taskId] Aborted by user.")
+                }
+              }
+              $resData.message = "Task $taskId aborted"
+            }
+          }
           '^/api/init$' {
             if (-not (Test-Path $script:repoPath)) {
               New-Item -ItemType Directory -Path $script:repoPath | Out-Null
             }
             Write-ApiLog "Starting Initialize-HPRepository background task..."
+            $modulePath = $env:PSModulePath
             $job = Start-Job -ScriptBlock {
-              param($repoPath)
-              import-Module HP.Repo -ErrorAction SilentlyContinue
+              param($repoPath, $modPath)
+              $VerbosePreference = 'Continue'
+              $env:PSModulePath = $modPath
+              Import-Module HP.Repo -Force -ErrorAction Stop
+              Write-Verbose "Module loaded. Initializing repository at $repoPath..."
               Push-Location $repoPath
               Initialize-HPRepository -Verbose
-            } -ArgumentList $script:repoPath
+              Write-Verbose "Repository initialization complete."
+            } -ArgumentList $script:repoPath, $modulePath
             $script:activeJobs += $job
+            $script:taskRegistry["task_$($job.Id)"] = @{
+              id = $job.Id; name = 'Initialize Repository'; state = 'Running'
+              startTime = Get-Date; messages = New-Object System.Collections.Generic.List[string]
+              progress = @{ total = 0; completed = 0; percentage = 0; currentStep = 'Initializing...'; results = @() }
+            }
             $resData.message = "Task $($job.Id) created"
           }
           '^/api/sync$' {
-            Write-ApiLog "Starting Invoke-HPRepositorySync background task..."
+            # Gather unique platform IDs from fleet if provided
+            $platforms = @()
+            if ($reqBody.platforms) {
+              $platforms = @($reqBody.platforms | Where-Object { $_ -and $_ -ne '' -and $_ -ne 'Unknown' } | Select-Object -Unique)
+            }
+            Write-ApiLog "Starting Invoke-HPRepositorySync background task (platforms: $($platforms -join ', '))..."
+            $modulePath = $env:PSModulePath
             $job = Start-Job -ScriptBlock {
-              param($repoPath, $refUrl)
-              Import-Module HP.Repo -ErrorAction SilentlyContinue
+              param($repoPath, $refUrl, $platforms, $modPath)
+              $VerbosePreference = 'Continue'
+              $env:PSModulePath = $modPath
+              Import-Module HP.Repo -Force -ErrorAction Stop
+              Write-Verbose "Module loaded. Syncing repository..."
               Push-Location $repoPath
+              
+              # Add repository filters for each fleet platform
+              if ($platforms.Count -gt 0) {
+                foreach ($platId in $platforms) {
+                  try {
+                    Write-Verbose "Adding repository filter for platform $platId..."
+                    Add-HPRepositoryFilter -Platform $platId -ErrorAction SilentlyContinue
+                  }
+                  catch {
+                    Write-Warning "Could not add filter for platform $platId : $_"
+                  }
+                }
+              }
+              
               if ($refUrl) {
                 Invoke-HPRepositorySync -ReferenceUrl $refUrl -Verbose
               }
               else {
                 Invoke-HPRepositorySync -Verbose
               }
-            } -ArgumentList $script:repoPath, $reqBody.refUrl
+              Write-Verbose "Repository sync complete."
+            } -ArgumentList $script:repoPath, $reqBody.refUrl, $platforms, $modulePath
             $script:activeJobs += $job
+            $script:taskRegistry["task_$($job.Id)"] = @{
+              id = $job.Id; name = 'Sync Repository'; state = 'Running'
+              startTime = Get-Date; messages = New-Object System.Collections.Generic.List[string]
+              progress = @{ total = 0; completed = 0; percentage = 0; currentStep = 'Starting sync...'; results = @() }
+            }
             $resData.message = "Task $($job.Id) created"
           }
           '^/api/cleanup$' {
             Write-ApiLog "Starting Invoke-HPRepositoryCleanup background task..."
+            $modulePath = $env:PSModulePath
             $job = Start-Job -ScriptBlock {
-              param($repoPath)
-              Import-Module HP.Repo -ErrorAction SilentlyContinue
+              param($repoPath, $modPath)
+              $VerbosePreference = 'Continue'
+              $env:PSModulePath = $modPath
+              Import-Module HP.Repo -Force -ErrorAction Stop
+              Write-Verbose "Module loaded. Cleaning up repository..."
               Push-Location $repoPath
               Invoke-HPRepositoryCleanup -Verbose
-            } -ArgumentList $script:repoPath
+              Write-Verbose "Repository cleanup complete."
+            } -ArgumentList $script:repoPath, $modulePath
             $script:activeJobs += $job
+            $script:taskRegistry["task_$($job.Id)"] = @{
+              id = $job.Id; name = 'Cleanup Repository'; state = 'Running'
+              startTime = Get-Date; messages = New-Object System.Collections.Generic.List[string]
+              progress = @{ total = 0; completed = 0; percentage = 0; currentStep = 'Cleaning up...'; results = @() }
+            }
             $resData.message = "Task $($job.Id) created"
           }
           '^/api/fleet/scan$' {
@@ -366,8 +574,13 @@ try {
                 $resData.message = 'Unreachable via Ping'
               }
               else {
-                $opt = New-CimSessionOption -Protocol Dcom
-                $session = New-CimSession -ComputerName $hostname -SessionOption $opt -ErrorAction Stop
+                try {
+                  $session = New-CimSession -ComputerName $hostname -ErrorAction Stop
+                }
+                catch {
+                  $opt = New-CimSessionOption -Protocol Dcom
+                  $session = New-CimSession -ComputerName $hostname -SessionOption $opt -ErrorAction Stop
+                }
 
                 $modelInfo = Get-CimInstance -ClassName Win32_ComputerSystem -CimSession $session
                 $biosInfo = Get-CimInstance -ClassName Win32_BIOS -CimSession $session
@@ -395,28 +608,116 @@ try {
                     
                   # Fetch applicable packages directly using HPCMSL
                   $applicable = @()
+                  Import-Module HP.Repo -ErrorAction SilentlyContinue
                   if ($resData.system.platform -ne 'Unknown') {
-                    Write-ApiLog "Fetching available updates from HP for platform $($resData.system.platform)..."
-                    $softpaqs = Get-HPSoftpaqList -Platform $resData.system.platform -Category "Firmware", "Driver" -ReleaseType "Critical", "Recommended" -ErrorAction SilentlyContinue
-                    if ($softpaqs) {
-                      foreach ($sp in $softpaqs) {
-                        $pkgId = if ($sp.Id) { $sp.Id } elseif ($sp.Number) { $sp.Number } else { $null }
-                        if ($pkgId) { $applicable += @{ id = $pkgId; type = 'SoftPaq' } }
+                    try {
+                      Write-ApiLog "Fetching available updates from HP for platform $($resData.system.platform)..."
+                      $softpaqs = Get-HPSoftpaqList -Platform $resData.system.platform -Category "Firmware", "Driver" -ReleaseType "Critical", "Recommended" -ErrorAction SilentlyContinue
+                      if ($softpaqs) {
+                        foreach ($sp in $softpaqs) {
+                          $pkgId = if ($sp.Id) { $sp.Id } elseif ($sp.Number) { $sp.Number } else { $null }
+                          if ($pkgId) {
+                            $applicable += @{
+                              id       = $pkgId
+                              type     = 'SoftPaq'
+                              name     = $(if ($sp.Name) { $sp.Name } else { 'Unknown' })
+                              category = $(if ($sp.Category) { $sp.Category } else { 'Unknown' })
+                              version  = $(if ($sp.Version) { $sp.Version } else { 'N/A' })
+                              date     = $(if ($sp.DateReleased) { $sp.DateReleased } elseif ($sp.ReleaseDate) { $sp.ReleaseDate } else { 'N/A' })
+                            }
+                          }
+                        }
                       }
                     }
+                    catch {
+                      Write-ApiLog "Warning: Failed to fetch SoftPaq list for platform $($resData.system.platform): $_"
+                    }
                     
-                    $biosUpdates = Get-HPBIOSUpdates -Platform $resData.system.platform -ErrorAction SilentlyContinue
-                    if ($biosUpdates) {
-                      # Ensure it's an array and capture versions
-                      $bArray = if ($biosUpdates -is [array]) { $biosUpdates } else { @($biosUpdates) }
-                      foreach ($b in $bArray) {
-                        if ($b.Version) { $applicable += @{ id = $b.Version; type = 'BIOS'; platform = $resData.system.platform } }
+                    try {
+                      $biosUpdates = Get-HPBIOSUpdates -Platform $resData.system.platform -ErrorAction SilentlyContinue
+                      if ($biosUpdates) {
+                        $bArray = if ($biosUpdates -is [array]) { $biosUpdates } else { @($biosUpdates) }
+                        foreach ($b in $bArray) {
+                          if ($b.Version) {
+                            $applicable += @{
+                              id       = $b.Version
+                              type     = 'BIOS'
+                              name     = "BIOS Update $(if ($b.Name) { $b.Name } else { $b.Version })"
+                              category = 'BIOS'
+                              version  = $b.Version
+                              date     = $(if ($b.Date) { $b.Date } elseif ($b.DateReleased) { $b.DateReleased } else { 'N/A' })
+                              platform = $resData.system.platform
+                            }
+                          }
+                        }
                       }
+                    }
+                    catch {
+                      Write-ApiLog "Warning: Failed to fetch BIOS updates for platform $($resData.system.platform): $_"
                     }
                   }
                   $resData.applicable = $applicable
                 }
               }
+            }
+            catch {
+              $resData.success = $false
+              $resData.message = $_.Exception.Message
+            }
+          }
+          '^/api/fleet/discover$' {
+            try {
+              Write-ApiLog "Starting network discovery scan..."
+              $devices = @()
+              
+              # Get local subnet from first active adapter
+              $adapter = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled=True" | Select-Object -First 1
+              $localIP = $adapter.IPAddress | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' } | Select-Object -First 1
+              $subnet = ($localIP -split '\.')[0..2] -join '.'
+              
+              Write-ApiLog "Scanning subnet $subnet.0/24..."
+              
+              # Quick ping sweep using Test-Connection in parallel (batch of IPs)
+              $ips = 1..254 | ForEach-Object { "$subnet.$_" }
+              $alive = @()
+              foreach ($ip in $ips) {
+                if (Test-Connection -ComputerName $ip -Count 1 -Quiet -TimeToLive 32 -ErrorAction SilentlyContinue) {
+                  $alive += $ip
+                }
+              }
+              
+              Write-ApiLog "Found $($alive.Count) live hosts, probing for HP devices..."
+              
+              foreach ($ip in $alive) {
+                try {
+                  $opt = New-CimSessionOption -Protocol Dcom
+                  $sess = New-CimSession -ComputerName $ip -SessionOption $opt -ErrorAction Stop
+                  $cs = Get-CimInstance -CimSession $sess -ClassName Win32_ComputerSystem -ErrorAction Stop
+                  $bios = Get-CimInstance -CimSession $sess -ClassName Win32_BIOS -ErrorAction Stop
+                  Remove-CimSession $sess
+                  
+                  if ($cs.Manufacturer -match 'HP|Hewlett') {
+                    $devices += @{
+                      hostname = $ip
+                      status   = 'Online'
+                      system   = @{
+                        model    = $cs.Model
+                        serial   = $bios.SerialNumber
+                        platform = 'Pending'
+                        os       = ''
+                      }
+                    }
+                    Write-ApiLog "Discovered HP device: $ip ($($cs.Model))"
+                  }
+                }
+                catch {
+                  # Not accessible or not HP — skip
+                }
+              }
+              
+              $resData.devices = $devices
+              $resData.message = "Discovery complete. Found $($devices.Count) HP devices."
+              Write-ApiLog "Network discovery complete. Found $($devices.Count) HP devices."
             }
             catch {
               $resData.success = $false
@@ -435,81 +736,191 @@ try {
                 throw "Targets and packages must be provided."
               }
               
+              $modulePath = $env:PSModulePath
+              $pkgArray = @($packages)
               $job = Start-Job -ScriptBlock {
-                param($targets, $packages, $repoPath)
-                Import-Module HP.Repo -ErrorAction SilentlyContinue
+                param($targets, $packages, $repoPath, $modPath)
+                $VerbosePreference = 'Continue'
+                $env:PSModulePath = $modPath
+                Import-Module HP.Repo -Force -ErrorAction Stop
+                $packages = @($packages)
+                $totalPkgs = $packages.Count
                 
                 foreach ($pctarget in $targets) {
-                  Write-Verbose "Verifying connection to $pctarget..."
                   if (-not (Test-Connection -ComputerName $pctarget -Count 1 -Quiet -ErrorAction SilentlyContinue)) {
-                    Write-Error "Could not ping $pctarget"
+                    Write-Error "Cannot reach $pctarget - skipping"
                     continue
                   }
+                  Write-Verbose "Connected to $pctarget - $totalPkgs package(s)"
+                  
+                  $pkgNum = 0
+                  $successCount = 0
+                  $failCount = 0
                                   
                   foreach ($pkgObj in $packages) {
+                    $pkgNum++
+                    $pkg = $pkgObj.id
+                    $pkgName = $pkgObj.name
+                    
                     if ($pkgObj.type -eq 'BIOS') {
-                      Write-Verbose "Starting BIOS Update ($($pkgObj.id)) on $pctarget..."
+                      Write-Verbose "[$pkgNum/$totalPkgs] Flashing BIOS on $pctarget..."
                       try {
                         Get-HPBIOSUpdates -Platform $pkgObj.platform -Flash -Yes -BitLocker Suspend -Target $pctarget -ErrorAction Stop
-                        Write-Verbose "Triggered BIOS update successfully on $pctarget."
+                        Write-Verbose "[$pkgNum/$totalPkgs] BIOS flash complete. EXITCODE:0 for $pkg"
+                        $successCount++
                       }
                       catch {
-                        Write-Error "Failed to flash BIOS on $pctarget : $_"
+                        Write-Error "[$pkgNum/$totalPkgs] BIOS flash failed: $_. EXITCODE:1 for $pkg"
+                        $failCount++
                       }
                     }
                     else {
-                      $pkg = $pkgObj.id
-                      Write-Verbose "Ensuring package $pkg is downloaded locally to $repoPath..."
-                      Get-HPSoftpaq -Number $pkg -Directory $repoPath -SaveAs "$pkg.exe" -ErrorAction SilentlyContinue | Out-Null
+                      # Find or download SoftPaq
+                      $localPkgPath = $null
+                      foreach ($p in @((Join-Path $repoPath "$pkg.exe"), (Join-Path $repoPath $pkg))) {
+                        if (Test-Path $p) { $localPkgPath = $p; break }
+                      }
                       
-                      $localPkgPath = Join-Path $repoPath "$pkg.exe"
-                      if (-not (Test-Path $localPkgPath)) {
-                        $localPkgPath = Join-Path $repoPath $pkg
-                        if (-not (Test-Path $localPkgPath)) {
-                          Write-Error "Failed to download Package $pkg to repository $repoPath"
+                      if (-not $localPkgPath) {
+                        $savePath = Join-Path $repoPath "$pkg.exe"
+                        try {
+                          Get-Softpaq -Number $pkg -SaveAs $savePath -Overwrite yes -ErrorAction Stop | Out-Null
+                          $localPkgPath = $savePath
+                        }
+                        catch {
+                          Write-Error "[$pkgNum/$totalPkgs] $pkg download failed: $_"
+                          $failCount++
                           continue
                         }
                       }
 
-                      Write-Verbose "Deploying $pkg to $pctarget..."
-                                        
                       try {
                         $fileName = Split-Path $localPkgPath -Leaf
-                        $remoteSmbDest = "\\$pctarget\c$\Windows\Temp\$fileName"
-                        $remoteLocalDest = "C:\Windows\Temp\$fileName"
-                                            
-                        Write-Verbose "Copying $fileName to $pctarget via SMB..."
-                        Copy-Item -Path $localPkgPath -Destination $remoteSmbDest -Force -ErrorAction Stop
-                                            
-                        Write-Verbose "Executing $fileName on $pctarget via WMI..."
-                        $opt = New-CimSessionOption -Protocol Dcom
-                        $session = New-CimSession -ComputerName $pctarget -SessionOption $opt -ErrorAction Stop
+                        $remoteSmbDest = "\\$pctarget\c$\SWSetup\$fileName"
                         
-                        $commandLine = "$remoteLocalDest /s /a /s /q /x"
+                        # Ensure remote directory exists
+                        $remoteSmbDir = "\\$pctarget\c$\SWSetup"
+                        if (-not (Test-Path $remoteSmbDir)) {
+                          New-Item -ItemType Directory -Path $remoteSmbDir -Force | Out-Null
+                        }
+                        
+                        # Copy to remote with retry
+                        for ($retry = 0; $retry -lt 3; $retry++) {
+                          try {
+                            Copy-Item -Path $localPkgPath -Destination $remoteSmbDest -Force -ErrorAction Stop
+                            break
+                          }
+                          catch {
+                            if ($retry -ge 2) { throw $_ }
+                            Start-Sleep -Seconds 3
+                          }
+                        }
+                        
+                        if (-not (Test-Path $remoteSmbDest)) {
+                          Write-Error "[$pkgNum/$totalPkgs] $pkg - copy to $pctarget failed"
+                          $failCount++
+                          continue
+                        }
+                        Write-Verbose "[$pkgNum/$totalPkgs] $pkg ($pkgName) copied to $pctarget"
+                        
+                        # Create a small batch file on remote to capture exit code
+                        $batSmb = "\\$pctarget\c$\SWSetup\run_${pkg}.bat"
+                        $resultSmb = "\\$pctarget\c$\SWSetup\${pkg}_result.txt"
+                        # Write batch file via SMB (plain ASCII text, no escaping issues)
+                        "@`"C:\SWSetup\$fileName`" /s`r`necho EXITCODE=%ERRORLEVEL% > C:\SWSetup\${pkg}_result.txt" | Set-Content -Path $batSmb -Encoding ASCII -Force
+                        
+                        Write-Verbose "[$pkgNum/$totalPkgs] $pkg ($pkgName) installing on $pctarget..."
+                        $session = $null
+                        try { $session = New-CimSession -ComputerName $pctarget -ErrorAction Stop }
+                        catch {
+                          $opt = New-CimSessionOption -Protocol Dcom
+                          $session = New-CimSession -ComputerName $pctarget -SessionOption $opt -ErrorAction Stop
+                        }
+                        
+                        $commandLine = "cmd.exe /c C:\SWSetup\run_${pkg}.bat"
                         $invokeResult = Invoke-CimMethod -CimSession $session -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $commandLine } -ErrorAction Stop
                         
                         if ($invokeResult.ReturnValue -eq 0) {
-                          Write-Verbose "Deploy Result ($pctarget): Process started successfully (PID: $($invokeResult.ProcessId)). Package is installing silently."
+                          $pidVal = $invokeResult.ProcessId
+                          
+                          $maxWait = 1800
+                          $elapsed = 0
+                          while ($elapsed -lt $maxWait) {
+                            Start-Sleep -Seconds 15
+                            $elapsed += 15
+                            $proc = Get-CimInstance -CimSession $session -ClassName Win32_Process -Filter "ProcessId = $pidVal" -ErrorAction SilentlyContinue
+                            if (-not $proc) {
+                              Start-Sleep -Seconds 3
+                              break
+                            }
+                          }
+                          
+                          # Read result
+                          $exitCode = -1
+                          try {
+                            if (Test-Path $resultSmb) {
+                              $resultContent = (Get-Content $resultSmb -ErrorAction Stop | Select-Object -First 1).Trim()
+                              if ($resultContent -match 'EXITCODE=(-?\d+)') {
+                                $exitCode = [int]$Matches[1]
+                              }
+                              Remove-Item $resultSmb -Force -ErrorAction SilentlyContinue
+                            }
+                          }
+                          catch { $exitCode = -1 }
+                          
+                          # Cleanup batch file
+                          Remove-Item $batSmb -Force -ErrorAction SilentlyContinue
+                          
+                          $exitStatus = switch ($exitCode) {
+                            0 { 'Success' }
+                            1641 { 'Reboot Initiated' }
+                            3010 { 'Reboot Required' }
+                            1602 { 'User Cancelled' }
+                            1603 { 'Fatal Error' }
+                            1618 { 'Another Install In Progress' }
+                            -2 { 'Extract Failed' }
+                            -3 { 'No Installer Found' }
+                            -4 { 'Script Error' }
+                            default { "Error ($exitCode)" }
+                          }
+                          
+                          if ($exitCode -eq 0 -or $exitCode -eq 3010 -or $exitCode -eq 1641) {
+                            Write-Verbose "[$pkgNum/$totalPkgs] $pkg ($pkgName) - $exitStatus. EXITCODE:$exitCode for $pkg"
+                            $successCount++
+                          }
+                          else {
+                            Write-Error "[$pkgNum/$totalPkgs] $pkg ($pkgName) - $exitStatus. EXITCODE:$exitCode for $pkg"
+                            $failCount++
+                          }
+                          
+                          if ($elapsed -ge $maxWait) {
+                            Write-Warning "[$pkgNum/$totalPkgs] $pkg timed out after ${maxWait}s"
+                          }
                         }
                         else {
-                          Write-Error "Deploy Result ($pctarget): Failed to start process. WMI Return Value: $($invokeResult.ReturnValue)"
+                          Write-Error "[$pkgNum/$totalPkgs] Failed to start on $pctarget. WMI code: $($invokeResult.ReturnValue)"
+                          $failCount++
                         }
+                        
+                        if ($session) { Remove-CimSession $session -ErrorAction SilentlyContinue }
                       }
                       catch {
-                        Write-Error "Deployment failed on $pctarget : $_"
-                      }
-                      finally {
-                        if (Get-Variable -Name 'session' -ErrorAction SilentlyContinue) {
-                          Remove-CimSession -Session $session -ErrorAction SilentlyContinue
-                        }
+                        Write-Error "[$pkgNum/$totalPkgs] $pkg ($pkgName) failed: $_"
+                        $failCount++
                       }
                     }
                   }
-                  Write-Verbose "Completed deployment to $pctarget."
+                  Write-Verbose "Deployment to $pctarget complete: $successCount succeeded, $failCount failed"
                 }
-              } -ArgumentList $targets, $packages, $script:repoPath
+              } -ArgumentList $targets, $pkgArray, $script:repoPath, $modulePath
 
               $script:activeJobs += $job
+              $script:taskRegistry["task_$($job.Id)"] = @{
+                id = $job.Id; name = "Deploy to $($targets -join ', ')"; state = 'Running'
+                startTime = Get-Date; messages = New-Object System.Collections.Generic.List[string]
+                progress = @{ total = $pkgArray.Count; completed = 0; percentage = 0; currentStep = 'Starting deployment...'; results = @() }
+              }
+              $resData.taskId = $job.Id
               $resData.message = "Task $($job.Id) created for deployment"
             }
             catch {

@@ -1098,7 +1098,9 @@ function Invoke-HPPrivateExpandCAB {
 
   $exception = $null
   try {
-    if ($IsWindows -eq $false -or ((Get-Variable IsWindows -ErrorAction SilentlyContinue) -and $IsWindows -eq $false) -or [System.Environment]::OSVersion.Platform -ne 'Win32NT') {
+    $isWin = $true
+    if (Get-Variable IsWindows -ErrorAction SilentlyContinue) { $isWin = $IsWindows }
+    if ($isWin -eq $false -or [System.Environment]::OSVersion.Platform -ne 'Win32NT') {
       if (Get-Command "cabextract" -ErrorAction SilentlyContinue) {
         cabextract -q -d $target $cab
         return $target
@@ -1108,18 +1110,31 @@ function Invoke-HPPrivateExpandCAB {
         return $target
       }
     }
-    $shell = New-Object -ComObject "Shell.Application"
-    if (!$?) { $(throw "unable to create $comObject object") }
-    $sourceCab = $shell.Namespace($cab).items()
-    $DestinationFolder = $shell.Namespace($target)
-    $DestinationFolder.CopyHere($sourceCab)
+    if ($cab.EndsWith('.cab')) {
+      $extracProc = Start-Process -FilePath "extrac32.exe" -ArgumentList "/Y", "/E", "`"$cab`"", "/L", "`"$target`"" -Wait -PassThru -WindowStyle Hidden
+      if ($extracProc.ExitCode -ne 0) {
+        Write-Warning "extrac32.exe failed with exit code $($extracProc.ExitCode), falling back to Shell.Application"
+        $shell = New-Object -ComObject "Shell.Application"
+        $sourceCab = $shell.Namespace($cab).items()
+        $DestinationFolder = $shell.Namespace($target)
+        $DestinationFolder.CopyHere($sourceCab)
+      }
+    } elseif ($cab.EndsWith('.zip')) {
+      Expand-Archive -Path $cab -DestinationPath $target -Force -ErrorAction Stop
+    } else {
+      $shell = New-Object -ComObject "Shell.Application"
+      if (!$?) { $(throw "unable to create shell object") }
+      $sourceCab = $shell.Namespace($cab).items()
+      $DestinationFolder = $shell.Namespace($target)
+      $DestinationFolder.CopyHere($sourceCab)
+    }
   }
   catch {
     $exception = $_.Exception
   }
   finally {
-    if ($shell) {
-      [System.Runtime.InteropServices.Marshal]::ReleaseComObject([System.__ComObject]$shell) | Out-Null
+    if ($null -ne (Get-Variable -Name 'shell' -ErrorAction SilentlyContinue) -and $shell) {
+      try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject([System.__ComObject]$shell) | Out-Null } catch {}
     }
     [System.GC]::Collect()
     [System.GC]::WaitForPendingFinalizers()
